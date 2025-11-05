@@ -1,28 +1,80 @@
-name: Close inactive issues
+name: Build and Deploy to Nexus
+
 on:
-  schedule:
-    - cron: '0 0 * * *'
+  push:
+    branches:
+      - main  # Still auto-deploy on push to main
+  workflow_dispatch:  # Manual trigger with inputs
+    inputs:
+      branch:
+        description: 'Branch to deploy'
+        required: true
+        default: 'main'
+        type: choice
+        options:
+          - main
+          - develop
+          - staging
+          - production
 
 jobs:
-  close-issues:
+  build-and-deploy:
     runs-on: ubuntu-latest
-    permissions:
-      issues: write
-      pull-requests: write
+    
     steps:
-      - uses: actions/stale@v9
+      # Step 1: Checkout code from the selected branch
+      - name: Checkout repository
+        uses: actions/checkout@v4
         with:
-          days-before-issue-stale: 20
-          days-before-issue-close: -1
-          stale-issue-label: 'stale'
-          stale-issue-message: 'This issue is stale because it has been open for 15 days with no activity.'
-          exempt-issue-labels: 'long-term'
-          days-before-pr-stale: 20
-          days-before-pr-close: 7
-          stale-pr-label: 'stale'
-          stale-pr-message: 'This pull request is stale because it has been open for 15 days with no activity.'
-          close-pr-message: 'This pull request was closed because it has been inactive for 5 days since being marked as stale.'
-          only-pr-labels: 'answer'
-          exempt-pr-labels: 'challenge-creation, long-term, to be reviewed'
-          remove-pr-stale-when-updated: true
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          ref: ${{ github.event.inputs.branch || github.ref }}
+
+      # Step 2: Display which branch is being deployed
+      - name: Display deployment info
+        run: |
+          echo "Deploying branch: ${{ github.event.inputs.branch || github.ref_name }}"
+          echo "Triggered by: ${{ github.event_name }}"
+
+      # Step 3: Set up Node.js
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      # Step 4: Install dependencies
+      - name: Install dependencies
+        run: npm ci
+
+      # Step 5: Build the distribution
+      - name: Build distribution
+        run: npm run build
+
+      # Step 6: Create artifact archive
+      - name: Create artifact archive
+        run: |
+          cd dist
+          tar -czf ../artifact.tar.gz .
+          cd ..
+
+      # Step 7: Upload to Nexus with authentication
+      - name: Upload to Nexus
+        env:
+          NEXUS_USERNAME: ${{ secrets.NEXUS_USERNAME }}
+          NEXUS_PASSWORD: ${{ secrets.NEXUS_PASSWORD }}
+          NEXUS_URL: ${{ secrets.NEXUS_URL }}
+        run: |
+          # Define your Nexus repository details
+          REPOSITORY="your-repository-name"
+          GROUP_PATH="com/yourcompany/yourproject"
+          
+          # Use branch name in version
+          BRANCH_NAME="${{ github.event.inputs.branch || github.ref_name }}"
+          VERSION="${BRANCH_NAME}-${{ github.sha }}"
+          ARTIFACT_NAME="your-artifact-name"
+          
+          # Upload using curl with authentication
+          curl -v -u "${NEXUS_USERNAME}:${NEXUS_PASSWORD}" \
+            --upload-file artifact.tar.gz \
+            "${NEXUS_URL}/repository/${REPOSITORY}/${GROUP_PATH}/${ARTIFACT_NAME}/${VERSION}/${ARTIFACT_NAME}-${VERSION}.tar.gz"
+          
+          echo "✅ Deployed ${ARTIFACT_NAME} version ${VERSION} to Nexus"
